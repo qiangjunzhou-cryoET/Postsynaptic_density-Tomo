@@ -1,0 +1,161 @@
+ %Define number of batch processing
+ num = 13;
+ %%%%%
+
+% Read Files
+columnNum = 1;
+for file = 1:num
+    WFile = "sv_" + file + "_trans" + ".xlsx";   % Vesicle positions
+    YFile = "PSD_" + file + ".xlsx";             % PSD density file
+    ZFile = file + "_bg" + ".txt";               % PSD background value used for normalization
+    
+    % Check if XFile_o exists
+    if exist(XFile_o, 'file') == 2
+        % XFile_o exists, read it
+        Xx_o = readmatrix(XFile_o,'Range','B:B');
+        Xy_o = readmatrix(XFile_o,'Range','A:A');
+        X_o = [Xx_o, Xy_o];
+    else
+        % XFile_o doesn't exist, assign NaN to X_o
+        X_o = NaN;
+    end
+    
+    % Check if XFile_y exists
+    if exist(XFile_y, 'file') == 2
+        % XFile_y exists, read it
+        Xx_y = readmatrix(XFile_y,'Range','B:B');
+        Xy_y = readmatrix(XFile_y,'Range','A:A');
+        X_y = [Xx_y, Xy_y];
+    else
+        % XFile_y doesn't exist, assign NaN to X_y
+        X_y = NaN;
+    end
+    
+    % Process the data
+    columnNum = processing(WFile, X_o, X_y, YFile, ZFile, file, columnNum);
+end
+disp("Done Processing");
+%%%%%
+
+    %process files
+    function columnNum = processing(WFile, XFile,YFile, ZFile, file, columnNum)
+    %Importing the receptor value data (X_o)
+    Xx_o = readmatrix(XFile_o,'Range','B:B');
+    Xy_o = readmatrix(XFile_o,'Range','A:A');
+    X_o = [Xx_o, Xy_o];
+    [numReceptors_o, ~] = size(X_o);
+
+    %Importing the receptor value data (X_y)
+    Xx_y = readmatrix(XFile_y,'Range','B:B');
+    Xy_y = readmatrix(XFile_y,'Range','A:A');
+    X_y = [Xx_y, Xy_y];
+    [numReceptors_y, ~] = size(X_y);
+
+    %Importing the gray value data (Y) 
+    inputY = readmatrix (YFile);
+    [nrows, ncols]=size(inputY); %stores the number of rows and columns in input
+    values=[]; %output matrix
+    for r=1:nrows
+        for c=1:ncols
+            values=[values;r c inputY(r,c)];% keep appending [r,c,input] to new columns
+        end
+    end
+   
+    %Import backgroud value
+    bg_value = importdata(ZFile);
+    TF = values(:,3)<bg_value;
+    M3 = values(TF, :);
+    M = M3(:,3);
+
+    %Finding top 25% value threshold
+    [m, n] = size(M);
+    TTP = ceil(m*n*.25);%find the top 25 percent value
+    [val,~] = sort(M);
+    Threshold = val(TTP);%the value of the top 25 percent
+    
+    %Clustring using DBSCAN
+    M_Thres = values(values(:,3)<Threshold,1:2);
+    idx = dbscan(M_Thres,6,32); 
+    
+    %Delete points which belong to cluster -1 
+    N = [M_Thres idx];
+    idx2 = idx(idx~= -1);
+    numGroups = length(unique(idx2));
+    clr = hsv(numGroups);
+    N1=N(N(:,3) ~= -1,:);
+
+    % Determine if receptors are in convexhull of PSD clusters
+    t = unique(idx2);
+    o_num = zeros(length(t),1); 
+    y_num = zeros(length(t),1); 
+    ratio_o= zeros(length(t),1);
+    ratio_y= zeros(length(t),1);
+
+    for i = 1:length(t)
+        tf = N1(:,3)==i;
+        p = N1(tf,:);
+        x = p(:,1);
+        y = p(:,2);        
+        dt = delaunayTriangulation(x,y);
+        k = convexHull(dt);
+        isInConvexHull_o = inpolygon(X_o(:,1), X_o(:,2), x(k), y(k));
+        o_num(i) = sum(isInConvexHull_o);
+        isInConvexHull_y = inpolygon(X_y(:,1), X_y(:,2), x(k), y(k));
+        y_num(i) = sum(isInConvexHull_y);
+        ratio_o(i) = o_num(i)/(o_num(i)+y_num(i));
+        ratio_y(i) = y_num(i)/(o_num(i)+y_num(i));
+    end
+
+    
+     %Draw the clusters
+     h = figure();
+     set(h,'Visible', 'off');
+     gscatter(N(N(:,3) ~= -1,1),N(N(:,3) ~= -1,2),idx2,clr);
+
+     % Plot receptor value data (X_o)
+     hold on;
+     scatter(X_o(:,1), X_o(:,2), 'o');
+     hold off;
+     % Plot receptor value data (X_y)
+     hold on;
+     scatter(X_y(:,1), X_y(:,2), 'x');
+     hold off;
+
+    filename = strcat("DataSet",num2str(1));
+    axis image;
+    xlabel("X length");
+    ylabel("Y length");
+    title(filename);
+    filename = strcat(filename,".tif");
+    exportgraphics(h,filename,'Resolution',400)
+
+    %Output all significant values
+    o_num;
+    y_num;
+    ratio_o;
+    ratio_y;
+    write(o_num, y_num, ratio_o, ratio_y,file,columnNum);
+    columnNum = columnNum + length(t);
+end
+
+
+
+%write files
+function write(o_num, y_num, ratio_o, ratio_y,file,columnNum)
+    filename = 'MaxD_norm.xlsx';
+    title = ["o_receptor_num", "y_receptor_num",  "y_receptor_num",  "ratio_y"];
+    sheetName = ['Data set',num2str(file)];
+    writematrix(title, filename,'Sheet',sheetName,'Range','A1'); 
+    writematrix(o_num, filename,'Sheet',sheetName,'Range',['A',num2str(2)]);
+    writematrix(y_num, filename,'Sheet',sheetName,'Range',['B',num2str(2)]);
+    writematrix(ratio_o, filename,'Sheet',sheetName,'Range',['C',num2str(2)]);
+    writematrix(ratio_y, filename,'Sheet',sheetName,'Range',['D',num2str(2)]);
+    
+
+    %['A',num2str(columnNum)]
+    writematrix(o_num, filename, 'Sheet', "all", 'Range',['A',num2str(columnNum)]);
+    writematrix(y_num, filename, 'Sheet', "all", 'Range',['B',num2str(columnNum)]);
+    writematrix(ratio_o, filename, 'Sheet', "all", 'Range',['C',num2str(columnNum)]);
+    writematrix(ratio_y, filename, 'Sheet', "all", 'Range',['D',num2str(columnNum)]);
+end
+%%%%%
